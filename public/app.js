@@ -1,9 +1,9 @@
 const $ = s => document.querySelector(s);
 const byId = id => document.getElementById(id);
-const MAX_FILE = 512 * 1024, MAX_TOTAL = 2 * 1024 * 1024, MAX_FILES = 12;
+const MAX_FILE = 512 * 1024, MAX_TOTAL = 2 * 1024 * 1024, MAX_FILES = 12, REQUEST_TIMEOUT = 30000;
 const COMMIT = /^[0-9a-f]{7,64}$/i;
 const encoder = new TextEncoder();
-let files = [], report = null, selectedId = null, isSample = false, busy = false, activeRequest = null;
+let files = [], report = null, selectedId = null, isSample = false, busy = false, activeRequest = null, readToken = null;
 const labels = { mixed: 'Inconsistent outcomes', failed: 'Failed only', passed: 'Passed only', skipped: 'Skipped', insufficient: 'Insufficient evidence' };
 const element = (tag, content, className) => { const e = document.createElement(tag); if (content !== undefined) e.textContent = String(content); if (className) e.className = className; return e; };
 const error = message => { byId('form-error').textContent = message; byId('form-error').hidden = !message; };
@@ -14,6 +14,8 @@ function clearResults() {
 }
 function setBusy(value) {
   busy = value; byId('analyze').disabled = value; byId('file-input').disabled = value;
+  byId('commit').disabled = value; byId('load-sample').disabled = value; byId('load-sample-empty').disabled = value;
+  document.querySelectorAll('.remove, .commit-override input').forEach(control => { control.disabled = value; });
   byId('analyze').textContent = value ? 'Comparing reports…' : 'Compare reports →';
   byId('result-empty').hidden = value || Boolean(report); byId('results').hidden = value || !report; byId('result-loading').hidden = !value;
   byId('results-title').closest('section').setAttribute('aria-busy', String(value));
@@ -25,12 +27,12 @@ function drawFiles() {
     const row = element('div', undefined, 'file-row');
     const name = element('span', file.name, 'file-name'); name.title = file.name;
     row.append(name, element('span', `${Math.ceil(file.size / 1024)} KB`, 'file-size'));
-    const remove = element('button', '×', 'remove'); remove.type = 'button'; remove.setAttribute('aria-label', `Remove ${file.name}`);
+    const remove = element('button', '×', 'remove'); remove.type = 'button'; remove.disabled = busy; remove.setAttribute('aria-label', `Remove ${file.name}`);
     remove.addEventListener('click', () => { files.splice(index, 1); isSample = false; drawFiles(); clearResults(); error(''); });
     row.append(remove); list.append(row);
     const override = element('div', undefined, 'commit-override');
     const label = element('label', file.name); const id = `commit-${index}`; label.htmlFor = id; label.title = file.name;
-    const input = element('input'); input.id = id; input.type = 'text'; input.value = file.commit || ''; input.placeholder = 'Use default'; input.autocomplete = 'off'; input.spellcheck = false; input.maxLength = 64;
+    const input = element('input'); input.id = id; input.type = 'text'; input.value = file.commit || ''; input.placeholder = 'Use default'; input.autocomplete = 'off'; input.spellcheck = false; input.maxLength = 64; input.disabled = busy;
     input.setAttribute('aria-label', `Commit override for ${file.name}`); input.addEventListener('input', () => { file.commit = input.value; if (report) clearResults(); });
     override.append(label, input); overrides.append(override);
   }
@@ -38,6 +40,7 @@ function drawFiles() {
 async function addFiles(incoming) {
   error('');
   if (busy) return;
+  if (readToken) return error('Please wait for the current files to finish loading.');
   const incomingFiles = Array.from(incoming);
   if (files.length + incomingFiles.length > MAX_FILES) return error('Choose no more than 12 reports.');
   if (incomingFiles.some(file => file.size > MAX_FILE)) return error('Each report must be 512 KB or smaller.');
@@ -48,48 +51,67 @@ async function addFiles(incoming) {
     if (names.has(file.name)) return error(`Report names must be unique: ${file.name}`);
     names.add(file.name);
   }
+  const token = Symbol('file-read'); readToken = token;
   try {
     const additions = await Promise.all(incomingFiles.map(async file => ({name: file.name, size: file.size, xml: await file.text(), commit: ''})));
+    if (readToken !== token) return;
     if (additions.some(file => encoder.encode(file.xml).length > MAX_FILE)) return error('Each report must be 512 KB or smaller when decoded as text.');
     files.push(...additions); isSample = false; drawFiles(); clearResults();
-  } catch { error('We could not read those files. Please try again.'); }
+  } catch { if (readToken === token) error('We could not read those files. Please try again.'); }
+  finally { if (readToken === token) readToken = null; }
 }
 function reset() {
-  if (activeRequest) activeRequest.abort(); activeRequest = null;
+  if (activeRequest) activeRequest.abort(); activeRequest = null; readToken = null;
   files = []; isSample = false; byId('file-input').value = ''; byId('commit').value = ''; byId('search').value = ''; byId('filter').value = 'all';
   error(''); clearResults(); setBusy(false); drawFiles();
 }
 async function loadSample() {
   if (busy) return;
-  error(''); setBusy(true);
+  readToken = null; error('');
+  const controller = new AbortController(); activeRequest = controller; setBusy(true);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, REQUEST_TIMEOUT);
   try {
-    const responses = await Promise.all(['/samples/pass.xml', '/samples/fail.xml'].map(url => fetch(url)));
+    const responses = await Promise.all(['/samples/pass.xml', '/samples/fail.xml'].map(url => fetch(url, {signal:controller.signal})));
     if (responses.some(response => !response.ok)) throw new Error('Samples are unavailable. Try again or upload your own reports.');
     const xml = await Promise.all(responses.map(response => response.text()));
+    if (controller.signal.aborted && timedOut) throw new Error('Sample request timed out.');
+    if (activeRequest !== controller || controller.signal.aborted) return;
     files = xml.map((value, index) => ({name: index ? 'sample-fail.xml' : 'sample-pass.xml', size: encoder.encode(value).length, xml: value, commit: ''}));
     byId('commit').value = 'abcdef1234567'; isSample = true; drawFiles(); clearResults();
+    clearTimeout(timer);
     await analyze();
-  } catch (e) { error(e.message || 'Samples are unavailable. Please try again.'); }
-  finally { setBusy(false); }
+  } catch (e) {
+    if (activeRequest === controller && (e.name !== 'AbortError' || timedOut))
+      error(timedOut ? 'Loading samples took too long. Please try again.' : e.message || 'Samples are unavailable. Please try again.');
+  } finally {
+    clearTimeout(timer);
+    if (activeRequest === controller) { activeRequest = null; setBusy(false); }
+  }
 }
 async function analyze() {
   error('');
+  if (readToken) { error('Please wait for the current files to finish loading.'); return; }
   if (!files.length) { setBusy(false); error('Add at least one JUnit report. Two or more runs are needed to observe changes.'); return; }
   const commit = byId('commit').value.trim();
   const runs = files.map(file => ({name:file.name,commit:(file.commit.trim() || commit).toLowerCase(),xml:file.xml}));
   if (runs.some(run => !COMMIT.test(run.commit))) { setBusy(false); error('Enter a 7–64 character hexadecimal commit for every report.'); byId('commit').focus(); return; }
   if (runs.reduce((n, r) => n + encoder.encode(r.xml).length, 0) > MAX_TOTAL) { setBusy(false); error('Combined reports must be 2 MB or smaller.'); return; }
   const controller = new AbortController(); activeRequest = controller; setBusy(true);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, REQUEST_TIMEOUT);
   try {
     const response = await fetch('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({runs}), signal:controller.signal});
     const body = await response.json().catch(() => ({}));
+    if (controller.signal.aborted && timedOut) throw new Error('Analysis request timed out.');
     if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : 'Analysis failed. Please try again.');
+    if (activeRequest !== controller || controller.signal.aborted) return;
     if (!Array.isArray(body.tests) || !Array.isArray(body.runs) || !body.summary || !Array.isArray(body.warnings)) throw new Error('The service returned an invalid report. Please try again.');
     report = body; selectedId = body.tests[0]?.id || null; byId('search').value = ''; byId('filter').value = 'all'; renderReport();
     if (isSample) byId('results-title').scrollIntoView({behavior:'smooth',block:'start'});
   } catch (e) {
-    if (e.name !== 'AbortError') { report = null; error(e.message || 'Could not reach the analysis service. Please try again.'); }
-  } finally { if (activeRequest === controller) { activeRequest = null; setBusy(false); } }
+    if (activeRequest === controller && (e.name !== 'AbortError' || timedOut)) { report = null; error(timedOut ? 'Analysis took too long. Please try again.' : e.message || 'Could not reach the analysis service. Please try again.'); }
+  } finally { clearTimeout(timer); if (activeRequest === controller) { activeRequest = null; setBusy(false); } }
 }
 function pill(classification) { return element('span', labels[classification] || classification, `pill ${classification}`); }
 function renderReport() {

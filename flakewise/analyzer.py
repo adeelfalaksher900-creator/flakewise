@@ -18,6 +18,30 @@ class InputError(ValueError):
 def clean(value: str, max_length: int) -> str:
     return ''.join(c for c in value if c in '\n\t' or ord(c) >= 32)[:max_length]
 
+def identity_text(value: str, field: str) -> str:
+    # Do not truncate or normalize an identity: that can merge different tests.
+    if len(value) > 500:
+        raise InputError(f'{field} exceeds the 500-character limit.')
+    if any(ord(c) < 32 and c not in '\n\t' for c in value):
+        raise InputError(f'{field} contains unsupported control characters.')
+    return value
+
+def testcases_with_suite(root):
+    """Traverse JUnit while retaining named suite ancestry for classless tests."""
+    stack = [(root, ())]
+    while stack:
+        element, suite_path = stack.pop()
+        if tag(element) == 'testsuite':
+            suite_name = identity_text(element.get('name', ''), 'Suite name')
+            if suite_name.strip():
+                suite_path = (*suite_path, suite_name)
+                if len(suite_path) > 40 or sum(map(len, suite_path)) > 500:
+                    raise InputError('Named suite nesting exceeds the supported limit.')
+        if tag(element) == 'testcase':
+            yield element, suite_path
+        else:
+            stack.extend((child, suite_path) for child in reversed(list(element)))
+
 def tag(element):
     return element.tag.rsplit('}', 1)[-1] if isinstance(element.tag, str) else ''
 
@@ -35,6 +59,7 @@ def analyze(data):
     total_bytes = 0
     total_cases = 0
     summaries, names, groups = [], set(), defaultdict(list)
+    unidentified = False
     warnings = ['Commit identifiers are supplied by the user and are not independently verified.',
                 'Mixed outcomes on the same commit may reflect changes in test environments or data; they do not prove the cause.']
     for run in runs:
@@ -69,21 +94,32 @@ def analyze(data):
         if tag(root) not in {'testsuite', 'testsuites'}:
             raise InputError('Expected a JUnit testsuite or testsuites document.')
         seen, count = set(), 0
-        for case in root.iter():
-            if tag(case) != 'testcase':
-                continue
+        for case, suite_path in testcases_with_suite(root):
             count += 1
             total_cases += 1
             if total_cases > MAX_CASES:
                 raise InputError(f'At most {MAX_CASES} test observations are allowed.')
-            case_name = clean(case.get('name', '').strip(), 500)
-            class_name = clean(case.get('classname', '').strip(), 500)
-            if not case_name:
+            case_name = identity_text(case.get('name', ''), 'Test name')
+            reported_class = identity_text(case.get('classname', ''), 'Test class')
+            if not case_name.strip():
                 raise InputError('Every testcase needs a name.')
-            identity = (class_name, case_name)
+            if reported_class.strip():
+                class_name, source, identity_parts = reported_class, 'class', (reported_class,)
+            elif suite_path:
+                class_name, source, identity_parts = ' / '.join(suite_path), 'suite', suite_path
+            else:
+                # A bare name may represent unrelated tests in different reports.
+                # Scope to this report instead of claiming they are comparable.
+                class_name, source, identity_parts = '', 'unidentified', (name,)
+                unidentified = True
+            identity = (source, identity_parts, case_name)
             if identity in seen:
                 raise InputError(f'Duplicate test identity in report {name}: {class_name} / {case_name}.')
             seen.add(identity)
+            if any(tag(child) in {'flakyFailure', 'flakyError', 'rerunFailure', 'rerunError'} for child in case):
+                raise InputError('Retry-specific JUnit markers are not supported; provide a separate report for each run.')
+            if any(tag(child) == 'testcase' for child in list(case.iter())[1:]):
+                raise InputError('Nested test cases are not supported in JUnit reports.')
             statuses = [child for child in case if tag(child) in {'failure', 'error', 'skipped'}]
             kinds = {tag(child) for child in statuses}
             if 'skipped' in kinds and kinds.intersection({'failure', 'error'}):
@@ -101,17 +137,20 @@ def analyze(data):
             message = ''
             if failure is not None:
                 message = clean((failure.get('message') or ''.join(failure.itertext())).strip(), 500)
-            groups[(commit, class_name, case_name)].append({'run': name, 'status': status, 'duration': duration, 'message': message})
+            groups[(commit, class_name, case_name, source, identity_parts)].append({'run': name, 'status': status, 'duration': duration, 'message': message})
         if not count:
             raise InputError(f'Report {name} has no test cases.')
         summaries.append({'name': name, 'commit': commit, 'test_count': count})
+    if unidentified:
+        warnings.append('Tests without a classname or named suite are kept separate by report; cross-run identity cannot be established.')
     tests = []
-    for (commit, class_name, name), observations in groups.items():
+    for (commit, class_name, name, source, identity_parts), observations in groups.items():
         p = sum(o['status'] == 'pass' for o in observations)
         f = sum(o['status'] == 'fail' for o in observations)
         s = sum(o['status'] == 'skipped' for o in observations)
         classification = classify_counts(p, f, s)
-        identifier = hashlib.sha256('\0'.join((commit, class_name, name)).encode()).hexdigest()[:20]
+        identity_bytes = repr((commit, source, identity_parts, name)).encode('utf-8')
+        identifier = hashlib.sha256(identity_bytes).hexdigest()[:20]
         tests.append({'id': identifier, 'class_name': class_name, 'name': name, 'commit': commit,
                       'observations': observations, 'classification': classification,
                       'pass_count': p, 'fail_count': f, 'skip_count': s})
