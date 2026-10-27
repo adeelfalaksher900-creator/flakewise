@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="checkout"><testcase classname="checkout.PaymentTests" name="test_retry" time="0.15"/><testcase classname="checkout.PaymentTests" name="test_total" time="0.08"/></testsuite>
