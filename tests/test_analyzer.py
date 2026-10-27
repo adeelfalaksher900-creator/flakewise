@@ -47,6 +47,45 @@ class AnalysisTests(unittest.TestCase):
             with self.subTest(data=str(data)[:80]), self.assertRaises(InputError): analyze(data)
     def test_rejects_unpaired_surrogate(self):
         with self.assertRaises(InputError): analyze({'runs':[row('r','abcdef123','<testsuite>\ud800</testsuite>')]})
+    def test_rejects_long_names_instead_of_merging_prefixes(self):
+        for attr in ('name','classname'):
+            xml = '<testsuite><testcase name="test" classname="Class"/></testsuite>'
+            xml = xml.replace(f'{attr}="' + ('test' if attr == 'name' else 'Class') + '"', f'{attr}="' + 'x'*501 + '"')
+            with self.subTest(attr=attr), self.assertRaisesRegex(InputError, '500-character'):
+                analyze({'runs':[row('a','abcdef123',xml)]})
+    def test_classless_tests_use_named_suite_identity(self):
+        def report(suite, body=''):
+            return f'<testsuite name="{suite}"><testcase name="same">{body}</testcase></testsuite>'
+        different = analyze({'runs':[row('a','abcdef123',report('A')),row('b','abcdef123',report('B','<failure/>'))]})
+        self.assertEqual(different['summary']['mixed'],0)
+        self.assertEqual(different['summary']['tests'],2)
+        same = analyze({'runs':[row('a','abcdef123',report('A')),row('b','abcdef123',report('A','<failure/>'))]})
+        self.assertEqual(same['summary']['mixed'],1)
+    def test_unqualified_names_remain_separate_by_report(self):
+        a = '<testsuite><testcase name="same"/></testsuite>'
+        b = '<testsuite><testcase name="same"><failure/></testcase></testsuite>'
+        data = analyze({'runs':[row('a','abcdef123',a),row('b','abcdef123',b)]})
+        self.assertEqual(data['summary']['mixed'],0)
+        self.assertEqual(data['summary']['tests'],2)
+        self.assertNotEqual(data['tests'][0]['id'],data['tests'][1]['id'])
+        self.assertTrue(any('kept separate by report' in w for w in data['warnings']))
+    def test_class_and_suite_namespaces_do_not_collide(self):
+        a='<testsuite name="A"><testcase name="same"/></testsuite>'
+        b='<testsuite><testcase classname="A" name="same"><failure/></testcase></testsuite>'
+        data=analyze({'runs':[row('a','abcdef123',a),row('b','abcdef123',b)]})
+        self.assertEqual(data['summary']['mixed'],0)
+    def test_deep_named_suite_paths_are_bounded(self):
+        xml='<testsuite name="s">'*41+'<testcase name="a"/>'+'</testsuite>'*41
+        with self.assertRaisesRegex(InputError,'nesting'): analyze({'runs':[row('a','abcdef123',xml)]})
+    def test_retry_extensions_not_silently_treated_as_pass(self):
+        for marker in ('flakyFailure','flakyError','rerunFailure','rerunError'):
+            xml=f'<testsuite><testcase name="a"><{marker} message="intermittent"/></testcase></testsuite>'
+            with self.subTest(marker=marker), self.assertRaisesRegex(InputError,'Retry-specific'):
+                analyze({'runs':[row('a','abcdef123',xml)]})
+    def test_nested_testcase_rejected(self):
+        xml='<testsuite><testcase name="outer"><testcase name="inner"><failure/></testcase></testcase></testsuite>'
+        with self.assertRaisesRegex(InputError,'Nested'):
+            analyze({'runs':[row('a','abcdef123',xml)]})
     def test_untrusted_messages_are_not_html(self):
         xml='<testsuite><testcase name="&lt;img&gt;"><failure message="&lt;script&gt;"/></testcase></testsuite>'
         t=analyze({'runs':[row('r','abcdef123',xml)]})['tests'][0]
