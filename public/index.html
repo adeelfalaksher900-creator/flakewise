@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f7f4">
+  <meta name="description" content="Compare JUnit test reports from the same commit and turn inconsistent outcomes into reviewable evidence.">
+  <title>Flakewise — Make sense of inconsistent tests</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+<a href="#workspace" class="skip">Skip to workspace</a>
+<header class="topbar">
+  <a href="#workspace" class="brand" aria-label="Flakewise home"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>flakewise</span></a>
+  <nav aria-label="Main navigation"><a href="#workspace">Workspace</a><a href="#how-it-works">How it works</a><a href="#about">About</a></nav>
+  <span class="header-label"><span class="status-dot"></span> Test evidence, made clear</span>
+</header>
+<main id="workspace">
+  <section class="page-intro" aria-labelledby="page-title">
+    <div><p class="eyebrow"><span class="eyebrow-dot"></span> CI TEST INVESTIGATION</p><h1 id="page-title">When tests disagree,<br><span>start with evidence.</span></h1><p class="intro-copy">Compare JUnit reports from repeated runs of the same commit. See the tests that changed, then share a clear case with your team.</p><div class="intro-actions"><a class="action-primary" href="#setup">Start an investigation <span aria-hidden="true">↗</span></a><button class="link-button" id="load-sample" type="button">Explore sample reports <span aria-hidden="true">→</span></button></div></div>
+    <div class="intro-notes" aria-label="How this works"><div class="note"><span class="note-number">01</span><span>Add reports<span class="note-sub">JUnit XML</span></span></div><span class="note-rule"></span><div class="note"><span class="note-number">02</span><span>Compare runs<span class="note-sub">Same commit</span></span></div><span class="note-rule"></span><div class="note"><span class="note-number">03</span><span>Share evidence<span class="note-sub">Issue-ready</span></span></div></div>
+  </section>
+  <section class="workspace" aria-label="Investigation workspace">
+    <div class="workspace-heading"><div><p class="eyebrow">YOUR WORKSPACE</p><h2>Investigate a test run</h2><p>Add one or more reports. Two or more executions can reveal changes.</p></div><span class="workspace-indicator"><span class="status-dot"></span> No account required</span></div>
+    <div class="workspace-layout">
+      <section id="setup" class="panel setup-panel" aria-labelledby="setup-title">
+        <div class="panel-top"><div><p class="step">01 / INPUT</p><h3 id="setup-title">Add your reports</h3></div><span id="run-count" class="count-chip">0 / 12</span></div>
+        <p class="muted">Upload JUnit XML reports from CI runs. Each report represents one run.</p>
+        <div class="upload-zone" id="drop-zone"><div class="upload-icon" aria-hidden="true">↥</div><strong>Choose reports to compare</strong><span>JUnit XML · up to 12 files · 512 KB each</span><label for="file-input" class="file-label">Select XML files</label><input type="file" id="file-input" accept=".xml,text/xml,application/xml" multiple class="visually-hidden"></div>
+        <div id="files" class="file-list" aria-live="polite"></div>
+        <div class="commit-field"><label for="commit">Commit identifier</label><input id="commit" autocomplete="off" spellcheck="false" placeholder="e.g. a1b2c3d4" maxlength="64"><p>Used for all reports by default. You can edit each run’s commit below.</p><div id="commit-overrides"></div></div>
+        <div id="form-error" class="notice error" role="alert" hidden></div>
+        <button id="analyze" class="action-primary full" type="button">Compare reports <span aria-hidden="true">→</span></button>
+        <p class="privacy">Your reports are sent to this service for analysis and are not saved. Avoid uploading reports containing secrets.</p>
+      </section>
+      <section class="panel result-panel" aria-labelledby="results-title">
+        <div class="panel-top result-head"><div><p class="step">02 / FINDINGS</p><h3 id="results-title">Investigation</h3></div><button id="reset" class="text-button" type="button">Clear</button></div>
+        <div id="result-empty" class="empty-state"><div class="empty-icon" aria-hidden="true"><span class="empty-sheet s1"></span><span class="empty-sheet s2"></span><span class="empty-lens">⌕</span></div><h4>A clearer view starts here.</h4><p>Add reports from the same commit to see where their outcomes differ.</p><button class="link-button" id="load-sample-empty" type="button">Try with sample reports →</button></div>
+        <div id="result-loading" class="empty-state" hidden><div class="loading-ring" aria-hidden="true"></div><h4>Comparing your reports</h4><p>Checking each test across your supplied runs.</p></div>
+        <div id="results" hidden>
+          <div class="results-title"><div><h4 id="result-title">Comparison complete</h4><p id="result-subtitle"></p></div><button id="export-json" class="secondary-button" type="button">Export JSON</button></div>
+          <div id="sample-flag" class="notice sample" hidden>Sample reports · These results are illustrative.</div>
+          <div id="warnings" class="warning-list" aria-live="polite"></div>
+          <div id="summary" class="summary" aria-label="Comparison summary"></div>
+          <div class="filterbar"><label class="search-field"><span class="visually-hidden">Search tests</span><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search test or class"></label><label><span class="visually-hidden">Filter tests</span><select id="filter"><option value="all">All outcomes</option><option value="mixed">Inconsistent outcomes</option><option value="failed">Failed only</option><option value="passed">Passed only</option><option value="insufficient">Insufficient evidence</option><option value="skipped">Skipped</option></select></label></div>
+          <div id="test-list" class="test-list" aria-label="Test results"></div>
+          <div id="no-results" class="list-empty" hidden>No tests match your search. Try another filter.</div>
+          <section id="details" class="detail" aria-labelledby="detail-title" hidden><div class="detail-header"><div><p class="step">SELECTED TEST</p><h4 id="detail-title"></h4><p id="detail-meta"></p></div><button id="copy-issue" type="button" class="secondary-button">Copy issue draft</button></div><p id="detail-explanation" class="detail-explanation"></p><div id="observations" class="observations"></div><div id="copy-status" class="hint" role="status"></div></section>
+          <p class="interpretation">A change in outcome on a user-supplied commit is evidence of inconsistency, not proof of a flaky test or its cause. Environment and test data can also differ.</p>
+        </div>
+      </section>
+    </div>
+  </section>
+  <section id="how-it-works" class="guide" aria-labelledby="guide-title"><div><p class="eyebrow">THE WORKFLOW</p><h2 id="guide-title">From noisy runs<br>to a useful conversation.</h2><p>Give your team the context to reproduce an inconsistent test, without making a guess about its cause.</p></div><div class="guide-steps"><article><span>01</span><div><h3>Collect the reports</h3><p>Download JUnit XML from repeated CI runs. Reports must contain the same test identity to be compared.</p></div></article><article><span>02</span><div><h3>Check the commit</h3><p>Enter the commit for each run. These identifiers are supplied by you and are not independently verified.</p></div></article><article><span>03</span><div><h3>Share what you observed</h3><p>Inspect the outcomes and failure messages, then copy an issue draft with the evidence your team needs.</p></div></article></div></section>
+  <section id="about" class="about"><div><p class="eyebrow">BUILT FOR THE WORK AFTER CODE</p><h2>Less guessing. Better questions.</h2><p>Flakewise helps developers investigate inconsistent test outcomes using reports they already have. It does not execute tests, connect to your repository, or automatically fix or quarantine them.</p></div><a href="https://docs.gitlab.com/ci/testing/unit_test_reports/" target="_blank" rel="noreferrer" class="secondary-button">Read about JUnit in GitLab ↗</a></section>
+</main>
+<footer><a href="#workspace" class="footer-brand">flakewise</a><span>Evidence for the tests that need a second look.</span><span>JUnit XML · Commit-aware comparison</span></footer>
+</body>
+</html>
